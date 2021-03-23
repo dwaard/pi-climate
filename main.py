@@ -19,11 +19,15 @@ IN_TVOC = 'field8'
 OUT_TEMP = 'field2'
 OUT_HUM = 'field4'
 OUT_PRESS = 'field6'
+RAD_TEMP = 'field9'
+RAD_HUM = 'field10'
+RAD_STATE = 'field11'
 
-DHT22_PIN = 4
 
 LOG_STRING_BME280 = 'Indoor Temp={field1:6.2f}; Hum={field3:5.1f}; Press={field5:6.1f}'
 LOG_STRING_CCS811 = 'ECO2={field7:4d}; TVOC={field8:4d}'
+LOG_STRING_DHT22 = 'Radiat Temp={field9:6.2f}; Hum={field10:5.1f}'
+LOG_STRING_RAD = 'Radiat state={field11}'
 LOG_STRING_OWM = 'Outdoor Temp={field2:6.2f}; Hum={field4:5.1f}; Press={field6:6.1f}'
 
 # Load the settings from the .env file
@@ -49,6 +53,15 @@ bme280 = adafruit_bme280.Adafruit_BME280_I2C(i2c_bus, address=BME280_ADDRESS)
 ccs811 = adafruit_ccs811.CCS811(i2c_bus)
 # Make sure all is well on the I2C side
 sleep(CCS811_SETTLE_TIME)
+
+DHT22_PIN = int(os.getenv("DHT22_PIN", 4))
+FAN_ON_TEMP = int(os.getenv("FAN_ON_TEMP", 35))
+FAN_OFF_TEMP = int(os.getenv("FAN_OFF_TEMP", 34))
+
+IFTTT_URL = "https://maker.ifttt.com/trigger/{event}/with/key/{key}"
+IFTTT_KEY = os.getenv("IFTTT_KEY")
+IFTTT_FAN_ON = os.getenv("IFTTT_FAN_ON")
+IFTTT_FAN_OFF = os.getenv("IFTTT_FAN_OFF")
 
 OWM_API_KEY = os.getenv("OWM_API_KEY")
 OWM_QUERY = os.getenv("OWM_QUERY")
@@ -90,14 +103,40 @@ def read_ccs811(bme280):
     return result
 
 
+def read_DHT22():
+    """
+    Reads the DHT22 sensor into a tuple where the first element holds
+    the humidity and the second the temperature
+    """
+    logging.debug("Start reading DHT22")
+    hum, temp = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22, DHT22_PIN)
+    # Check if ther is a None item in the tuple
+    if temp is None or hum is None:
+        logging.exception('Exception while reading DHT22')
+        raise Exception('DHT22 reading exception')
+    result = {
+        RAD_TEMP : round(temp, 2),
+        RAD_HUM : round(hum, 2)
+    }
+    logging.info(LOG_STRING_DHT22.format(**result))
+    return result
+
+def switch_fan(on = True):
+    event = IFTTT_FAN_ON if on else IFTTT_FAN_OFF
+    ifttt_url = IFTTT_URL.format(key=IFTTT_KEY, event=event)
+    debug.info(ifttt_url)
+    r = requests.get(url = ifttt_url)
+
+
 def read_owm():
     logging.debug("Start reading OWM service")
     result = {}
     try:
-        # Transform OWM_QUERY to a dict so it can be passed to the wom service in the url
+        # Transform OWM_QUERY to a dict so it can be passed to the OWM service in the url
         params = {x[0] : x[1] for x in [y.split("=") for y in OWM_QUERY.split("&") ]}
         params['appid'] = OWM_API_KEY
         params['units'] = 'metric'
+
         response = requests.get("http://api.openweathermap.org/data/2.5/weather", params=params)
         logging.debug("Received: {}".format(response.text))
         response_json = response.json()
@@ -112,15 +151,6 @@ def read_owm():
         logging.exception('Exception while reading Wheather service')
         raise e
     return result
-
-def read_DHT22():
-    hum, temp = Adafruit_DHT.read_retry(Adafruit_DHT.DHT22, 4)
-    hum = round(hum, 2)
-    temp= round(temp, 2)
-    # Check if data is valid
-    if hum is None or temp is None:
-        logging.exception('Exception while reading DHT22')
-    return (hum, temp)
 
 
 def send_to_thingspeak(data):
@@ -140,12 +170,28 @@ def send_to_thingspeak(data):
             logging.exception('Exception while sending to Thingspeak')
 
 
+radiator = False
 def loop():
     start_time = time()
     logging.debug("Starting another loop")
     # Read BME280 and CCS811 sensors
     bme280_data = read_bme280()
     ccs811_data = read_ccs811(bme280_data)
+    # Read DHT22 and control radiator fan
+    dht22_data = read_DHT22()
+    rad_temp = dht22_data[RAD_TEMP]
+    changed = False
+    if not radiator and rad_temp>FAN_ON_TEMP:
+        switch_fan(True)
+        radiator=True
+        changed = True
+    if radiator and rad_temp<FAN_OFF_TEMP:
+        switch_fan(False)
+        radiator=False
+        changed = True
+    rad_data = { RAD_STATE : radiator }
+    if changed:
+        logging.info(LOG_STRING_RAD.format(rad_data))
     # Check and handle Request interval
     global last_request_time    
     if (start_time - last_request_time) >= REQUEST_INTERVAL:
@@ -154,7 +200,8 @@ def loop():
         # Fetch data from Open Wheather Map service
         owm_data = read_owm()
         # Send data to Thingspeak
-        send_to_thingspeak({**bme280_data, **ccs811_data, **owm_data})
+        send_to_thingspeak({**bme280_data, **ccs811_data, **owm_data,\
+            **dht22_data, **rad_data})
     # Sleep for the rest of the interval_time    
     process_time = time() - start_time
     if (process_time < MEASUREMENT_INTERVAL):
