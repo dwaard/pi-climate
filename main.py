@@ -14,7 +14,7 @@ dht22.init(app.env.int("DHT22_PIN", default=17))
 logging.debug("Initializing I2C")
 i2c_bus = busio.I2C(board.SCL, board.SDA)
 
-bme280.init(i2c_bus, address=app.env.int("BME280_ADDRESS", default=0x76))
+bme280.init(i2c_bus, address=int(app.env("BME280_ADDRESS", default=0x76),0))
 
 ccs811.init(i2c_bus)
 
