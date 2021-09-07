@@ -1,0 +1,8 @@
+# List all your required packages here
+adafruit-circuitpython-dht
+adafruit-circuitpython-bme280
+adafruit-circuitpython-ccs811
+paho-mqtt
+
+# Required from the template:
+envparse
